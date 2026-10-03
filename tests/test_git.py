@@ -445,20 +445,323 @@ def test_zero_exit_pull_with_autostash_conflict_is_reported_as_failure(
     config = config_factory({"one": pair.local})
     original_run = subprocess.run
     pull_codes = []
+    operations = []
 
     def record_real_pull(argv, **kwargs):
         completed = original_run(argv, **kwargs)
+        operations.append(argv)
         if "pull" in argv:
             pull_codes.append(completed.returncode)
         return completed
 
     monkeypatch.setattr(subprocess, "run", record_real_pull)
     code, captured = invoke_cli(["--config", str(config), "pull", "--json"])
+    monkeypatch.setattr(subprocess, "run", original_run)
     assert pull_codes == [0], "fixture must exercise Git's zero-exit autostash conflict"
     assert git(pair.local, "ls-files", "--unmerged").stdout.strip()
+    assert git(pair.local, "stash", "list").stdout.strip()
+    assert not any(
+        recovery in argv
+        for argv in operations
+        for recovery in ("reset", "stash", "clean", "checkout", "switch")
+    )
     assert code == 1
     result = assert_json(captured, "pull", total=1, failed=1)[0]
     assert (
         "conflict" in result["message"].lower()
         or "unmerged" in result["message"].lower()
+    )
+    assert "git status" in result["message"].lower()
+    assert "git stash list" in result["message"].lower()
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize("dirty", ["tracked", "staged", "untracked"])
+@pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+def test_dirty_checkout_preflight_is_actionable_and_never_switches(
+    repo_factory,
+    git,
+    config_factory,
+    snapshot,
+    monkeypatch,
+    invoke_cli,
+    assert_json,
+    dirty,
+    dry_run,
+):
+    repo = repo_factory()
+    git(repo, "branch", "feature")
+    filename = "untracked.txt" if dirty == "untracked" else "README.txt"
+    (repo / filename).write_text("preserve this change\n", encoding="utf-8")
+    if dirty == "staged":
+        git(repo, "add", filename)
+    before = snapshot(repo)
+    config = config_factory({"one": repo})
+    original_run = subprocess.run
+
+    def forbid_mutations(argv, **kwargs):
+        assert not {"switch", "checkout", "stash", "reset", "clean"}.intersection(argv)
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", forbid_mutations)
+    args = ["checkout", "feature"]
+    if dry_run:
+        args.append("--dry-run")
+    code, captured = invoke_cli(["--config", str(config), "--json", *args])
+    monkeypatch.setattr(subprocess, "run", original_run)
+
+    assert code == 1
+    result = assert_json(captured, "checkout", total=1, failed=1)[0]
+    assert "dirty" in result["message"].lower()
+    assert "preserve" in result["message"].lower()
+    assert snapshot(repo) == before
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+def test_checkout_refuses_ambiguous_tracking_refs_despite_default_remote(
+    remote_pair,
+    git,
+    config_factory,
+    snapshot,
+    invoke_cli,
+    assert_json,
+    dry_run,
+):
+    pair = remote_pair
+    git(pair.seed, "branch", "feature")
+    git(pair.seed, "push", "origin", "feature")
+    git(pair.local, "remote", "add", "backup", str(pair.bare))
+    git(pair.local, "fetch", "origin")
+    git(pair.local, "fetch", "backup")
+    assert (
+        git(pair.local, "config", "checkout.defaultRemote").stdout.strip() == "origin"
+    )
+    before = snapshot(pair.local)
+    config = config_factory({"one": pair.local})
+    args = ["checkout", "feature"]
+    if dry_run:
+        args.append("--dry-run")
+
+    code, captured = invoke_cli(["--config", str(config), "--json", *args])
+
+    assert code == 1
+    result = assert_json(captured, "checkout", total=1, failed=1)[0]
+    assert "ambiguous" in result["message"].lower()
+    assert snapshot(pair.local) == before
+
+
+@pytest.mark.mutation
+def test_checkout_local_branch_takes_precedence_over_ambiguous_tracking_refs(
+    remote_pair, git, config_factory, invoke_cli, assert_json
+):
+    pair = remote_pair
+    git(pair.seed, "branch", "feature")
+    git(pair.seed, "push", "origin", "feature")
+    git(pair.local, "remote", "add", "backup", str(pair.bare))
+    git(pair.local, "fetch", "origin")
+    git(pair.local, "fetch", "backup")
+    git(pair.local, "branch", "feature")
+    config = config_factory({"one": pair.local})
+
+    code, captured = invoke_cli(
+        ["--config", str(config), "--json", "checkout", "feature"]
+    )
+
+    assert code == 0
+    assert_json(captured, "checkout", total=1, ok=1)
+    assert git(pair.local, "branch", "--show-current").stdout.strip() == "feature"
+
+
+@pytest.mark.mutation
+def test_checkout_dry_run_missing_tracking_branch_does_not_fetch(
+    remote_pair, git, config_factory, snapshot, invoke_cli, assert_json
+):
+    pair = remote_pair
+    git(pair.seed, "branch", "not-fetched")
+    git(pair.seed, "push", "origin", "not-fetched")
+    before = snapshot(pair.local)
+    config = config_factory({"one": pair.local})
+
+    code, captured = invoke_cli(
+        [
+            "--config",
+            str(config),
+            "--json",
+            "checkout",
+            "not-fetched",
+            "--dry-run",
+        ]
+    )
+
+    assert code == 1
+    result = assert_json(captured, "checkout", total=1, failed=1)[0]
+    assert "branch" in result["message"].lower()
+    assert "fetch" in result["message"].lower()
+    assert snapshot(pair.local) == before
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize("command", ["pull", "fetch", "checkout"])
+@pytest.mark.parametrize("kind", ["missing", "nonrepo", "nested", "bare"])
+def test_mutation_dry_run_validates_worktree_root_without_mutations(
+    tmp_path,
+    repo_factory,
+    git,
+    config_factory,
+    monkeypatch,
+    invoke_cli,
+    assert_json,
+    command,
+    kind,
+):
+    path = tmp_path / "invalid"
+    if kind == "nonrepo":
+        path.mkdir()
+    elif kind == "nested":
+        repo = repo_factory()
+        git(repo, "branch", "feature")
+        path = repo / "nested"
+        path.mkdir()
+    elif kind == "bare":
+        path.mkdir()
+        git(path, "init", "--bare", "--initial-branch=main")
+    config = config_factory({"invalid": path})
+    original_run = subprocess.run
+    operations = []
+
+    def read_only_run(argv, **kwargs):
+        assert not {
+            "pull",
+            "fetch",
+            "switch",
+            "checkout",
+            "reset",
+            "stash",
+        }.intersection(argv)
+        operations.append(argv)
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", read_only_run)
+    args = [command, "feature"] if command == "checkout" else [command]
+    code, captured = invoke_cli(["--config", str(config), "--json", *args, "--dry-run"])
+
+    assert code == 1
+    assert_json(captured, command, total=1, failed=1)
+    assert any("rev-parse" in argv for argv in operations)
+
+
+@pytest.mark.mutation
+def test_checkout_supports_linked_worktrees(
+    tmp_path, repo_factory, git, config_factory, invoke_cli, assert_json
+):
+    repo = repo_factory()
+    linked = tmp_path / "linked"
+    git(repo, "branch", "feature")
+    git(repo, "worktree", "add", "-b", "linked-branch", str(linked))
+    config = config_factory({"linked": linked})
+
+    code, captured = invoke_cli(
+        ["--config", str(config), "--json", "checkout", "feature"]
+    )
+
+    assert code == 0
+    assert_json(captured, "checkout", total=1, ok=1)
+    assert git(linked, "branch", "--show-current").stdout.strip() == "feature"
+    assert git(repo, "branch", "--show-current").stdout.strip() == "main"
+
+
+@pytest.mark.mutation
+def test_checkout_uses_literal_branch_name_not_shell_syntax(
+    repo_factory, git, config_factory, invoke_cli, assert_json
+):
+    repo = repo_factory()
+    branch = "feature;not-a-command"
+    git(repo, "branch", branch)
+    config = config_factory({"one": repo})
+
+    code, captured = invoke_cli(["--config", str(config), "--json", "checkout", branch])
+
+    assert code == 0
+    assert_json(captured, "checkout", total=1, ok=1)
+    assert git(repo, "branch", "--show-current").stdout.strip() == branch
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize("command", ["pull", "fetch", "checkout"])
+def test_mutation_timeout_preserves_diagnostics_and_continues(
+    tmp_path,
+    remote_pair,
+    configure_git,
+    git,
+    config_factory,
+    monkeypatch,
+    invoke_cli,
+    assert_json,
+    command,
+):
+    pair = remote_pair
+    good = tmp_path / "good"
+    git(tmp_path, "clone", str(pair.bare), str(good))
+    configure_git(good)
+    git(pair.local, "branch", "feature")
+    git(good, "branch", "feature")
+    config = config_factory({"bad": pair.local, "good": good})
+    original_run = subprocess.run
+    operation = "switch" if command == "checkout" else command
+
+    def timeout_bad_mutation(argv, **kwargs):
+        if str(pair.local) in argv and operation in argv:
+            raise subprocess.TimeoutExpired(
+                cmd=argv,
+                timeout=kwargs["timeout"],
+                output=b"partial output",
+                stderr=b"timeout diagnostic",
+            )
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", timeout_bad_mutation)
+    args = [command, "feature"] if command == "checkout" else [command]
+    code, captured = invoke_cli(["--config", str(config), "--json", *args])
+
+    assert code == 1
+    results = assert_json(captured, command, total=2, ok=1, failed=1)
+    assert [(result["name"], result["status"]) for result in results] == [
+        ("bad", "failed"),
+        ("good", "ok"),
+    ]
+    assert "timeout diagnostic" in results[0]["message"]
+    assert "partial output" in results[0]["message"]
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize("shadow", ["local-branch", "tag"])
+def test_checkout_tracking_ref_cannot_be_shadowed_by_local_branch_or_tag(
+    remote_pair, git, config_factory, invoke_cli, assert_json, shadow
+):
+    pair = remote_pair
+    git(pair.seed, "branch", "feature")
+    git(pair.seed, "push", "origin", "feature")
+    git(pair.local, "fetch")
+    remote_head = git(
+        pair.local, "rev-parse", "refs/remotes/origin/feature"
+    ).stdout.strip()
+    git(pair.local, "commit", "--allow-empty", "-m", "Different local commit")
+    local_head = git(pair.local, "rev-parse", "HEAD").stdout.strip()
+    assert local_head != remote_head
+    git(pair.local, "branch" if shadow == "local-branch" else "tag", "origin/feature")
+    config = config_factory({"one": pair.local})
+
+    code, captured = invoke_cli(
+        ["--config", str(config), "--json", "checkout", "feature"]
+    )
+
+    assert code == 0
+    assert_json(captured, "checkout", total=1, ok=1)
+    assert git(pair.local, "rev-parse", "HEAD").stdout.strip() == remote_head
+    assert (
+        git(
+            pair.local, "rev-parse", "--symbolic-full-name", "@{upstream}"
+        ).stdout.strip()
+        == "refs/remotes/origin/feature"
     )

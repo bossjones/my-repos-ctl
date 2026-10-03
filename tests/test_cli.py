@@ -336,3 +336,161 @@ def test_git_seam_preserves_diagnostics_and_successful_stdout(
     with pytest.raises(cli.RepoError) as exc:
         cli._git(managed, ["rev-parse", "--verify", "refs/heads/absent"], 2)
     assert failed.stderr.strip() in str(exc.value)
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("pull", ["pull", "--rebase", "--autostash"]),
+        ("fetch", ["fetch", "--prune"]),
+        ("checkout", ["switch", "feature"]),
+    ],
+)
+def test_mutations_execute_safe_argv_with_common_options_and_json_only(
+    remote_pair,
+    git,
+    config_factory,
+    monkeypatch,
+    invoke_cli,
+    assert_json,
+    command,
+    expected,
+):
+    pair = remote_pair
+    git(pair.local, "branch", "feature")
+    config = config_factory({"one": pair.local})
+    original_run = subprocess.run
+    invocations = []
+
+    def observe_run(argv, **kwargs):
+        invocations.append((argv, kwargs))
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", observe_run)
+    args = [command, "feature"] if command == "checkout" else [command]
+    code, captured = invoke_cli(
+        [
+            "--config",
+            str(config),
+            "--json",
+            "--timeout",
+            "9",
+            "--repo",
+            "one",
+            *args,
+            "--timeout",
+            "1.5",
+            "--repo",
+            "one",
+        ]
+    )
+
+    assert code == 0
+    assert_json(captured, command, total=1, ok=1)
+    assert not captured.err
+    mutations = [
+        argv
+        for argv, _ in invocations
+        if any(operation in argv for operation in ("pull", "fetch", "switch"))
+    ]
+    assert mutations == [["git", "--no-pager", "-C", str(pair.local), *expected]]
+    assert all(options["timeout"] == 1.5 for _, options in invocations)
+    assert all(options["shell"] is False for _, options in invocations)
+    assert all(options["stdin"] == subprocess.DEVNULL for _, options in invocations)
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize(
+    "branch",
+    [
+        "--force",
+        "-c",
+        "-",
+        "@{-1}",
+        "@{-2}",
+        "bad..branch",
+        "HEAD",
+        "",
+        "bad\x00branch",
+    ],
+)
+def test_checkout_rejects_unsafe_branch_arguments_before_any_selected_repo(
+    repo_factory,
+    git,
+    config_factory,
+    snapshot,
+    monkeypatch,
+    invoke_cli,
+    branch,
+):
+    repo = repo_factory()
+    git(repo, "switch", "-c", "previous")
+    git(repo, "switch", "main")
+    config = config_factory({"one": repo})
+    before = snapshot(repo)
+    monkeypatch.chdir(repo)
+    original_run = subprocess.run
+    invocations = []
+
+    def observe_run(argv, **kwargs):
+        invocations.append(argv)
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", observe_run)
+    code, captured = invoke_cli(
+        ["--config", str(config), "--json", "checkout", "--", branch]
+    )
+    monkeypatch.setattr(subprocess, "run", original_run)
+
+    assert code == 2
+    assert not captured.out
+    assert "branch" in captured.err.lower()
+    assert all(
+        argv == ["git", "--no-pager", "check-ref-format", "--branch", branch]
+        for argv in invocations
+    )
+    assert snapshot(repo) == before
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize("command", ["pull", "fetch", "checkout"])
+def test_mutation_config_error_prevents_every_git_call(
+    tmp_path, config_factory, monkeypatch, invoke_cli, command
+):
+    config = config_factory({"one": tmp_path / "one"})
+    config.write_text("repos: [", encoding="utf-8")
+
+    def forbid_run(*args, **kwargs):
+        pytest.fail("invalid configuration must prevent all Git calls")
+
+    monkeypatch.setattr(subprocess, "run", forbid_run)
+    args = [command, "feature"] if command == "checkout" else [command]
+    code, captured = invoke_cli(["--config", str(config), "--json", *args])
+    assert code == 2
+    assert not captured.out
+    assert captured.err.strip()
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize("command", ["pull", "fetch", "checkout"])
+@pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+def test_mutations_include_human_summary(
+    remote_pair, git, config_factory, invoke_cli, command, dry_run
+):
+    pair = remote_pair
+    git(pair.local, "branch", "feature")
+    config = config_factory({"one": pair.local})
+    args = [command, "feature"] if command == "checkout" else [command]
+    if dry_run:
+        args.append("--dry-run")
+    code, captured = invoke_cli(["--config", str(config), *args])
+
+    assert code == 0
+    assert "one" in captured.out and str(pair.local) in captured.out
+    assert "summary" in captured.out.lower()
+    assert "1 total" in captured.out
+    assert f"{0 if dry_run else 1} ok" in captured.out
+    assert "0 failed" in captured.out
+    assert f"{1 if dry_run else 0} planned" in captured.out
+    assert not captured.err

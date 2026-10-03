@@ -4,6 +4,7 @@ import argparse
 import json
 import math
 import os
+import shlex
 import subprocess
 import sys
 from collections.abc import Sequence
@@ -99,8 +100,15 @@ def select_repos(repos: list[Repo], names: list[str]) -> list[Repo]:
     return selected
 
 
-def _git(repo: Repo, args: list[str], timeout: float) -> str:
-    argv = ["git", "--no-pager", "-C", str(repo.path), *args]
+def _git_command(repo: Repo | None, args: list[str]) -> list[str]:
+    argv = ["git", "--no-pager"]
+    if repo is not None:
+        argv.extend(["-C", str(repo.path)])
+    return [*argv, *args]
+
+
+def _git(repo: Repo | None, args: list[str], timeout: float) -> str:
+    argv = _git_command(repo, args)
     try:
         completed = subprocess.run(
             argv,
@@ -195,6 +203,86 @@ def _validate_worktree(repo: Repo, timeout: float) -> None:
         raise RepoError(f"Configured path is not the Git worktree root: {actual_root}")
 
 
+def _validate_branch(branch: str, timeout: float) -> None:
+    if branch.startswith(("-", "@{")) or "\x00" in branch:
+        raise ConfigError(
+            f"Invalid branch name {branch!r}: "
+            "use a literal branch name, not an option or history shorthand"
+        )
+    try:
+        _git(None, ["check-ref-format", "--branch", branch], timeout)
+    except RepoError as exc:
+        raise ConfigError(f"Cannot validate branch name {branch!r}: {exc}") from exc
+
+
+def _checkout_args(repo: Repo, branch: str, timeout: float) -> list[str]:
+    if _git(repo, ["status", "--porcelain=v1", "--untracked-files=all"], timeout):
+        raise RepoError(
+            "Refusing to switch a dirty worktree, including untracked files. "
+            "Commit or otherwise preserve your changes before retrying."
+        )
+    refs = set(
+        _git(
+            repo,
+            ["for-each-ref", "--format=%(refname)", "refs/heads/", "refs/remotes/"],
+            timeout,
+        ).splitlines()
+    )
+    if f"refs/heads/{branch}" in refs:
+        return ["switch", branch]
+    tracking = [
+        f"{remote}/{branch}"
+        for remote in _git(repo, ["remote"], timeout).splitlines()
+        if f"refs/remotes/{remote}/{branch}" in refs
+    ]
+    if not tracking:
+        raise RepoError(
+            f"Branch {branch!r} does not exist locally or as a remote-tracking "
+            "branch. Fetch explicitly before retrying if the branch is remote."
+        )
+    if len(tracking) != 1:
+        raise RepoError(
+            f"Branch {branch!r} is ambiguous across remote-tracking branches: "
+            f"{', '.join(tracking)}. Create the intended local branch explicitly."
+        )
+    return ["switch", "--track", "-c", branch, "--", f"refs/remotes/{tracking[0]}"]
+
+
+def _mutate_repo(
+    repo: Repo, command: str, branch: str | None, dry_run: bool, timeout: float
+) -> dict[str, object]:
+    _validate_worktree(repo, timeout)
+    if command == "checkout":
+        assert branch is not None
+        args = _checkout_args(repo, branch, timeout)
+    elif command == "pull":
+        args = ["pull", "--rebase", "--autostash"]
+    else:
+        args = ["fetch", "--prune"]
+    git_command = _git_command(repo, args)
+    if dry_run:
+        message = (
+            f"Planned {shlex.join(git_command)}. Read-only preflight does not "
+            "predict remote availability or merge success."
+        )
+    else:
+        _git(repo, args, timeout)
+        if command == "pull" and _git(repo, ["ls-files", "--unmerged"], timeout):
+            raise RepoError(
+                "Pull left unmerged index entries (possible autostash conflict). "
+                "Inspect 'git status' and 'git stash list', preserve your changes, "
+                "and resolve conflicts manually. No recovery was attempted."
+            )
+        message = f"Completed {shlex.join(git_command)}"
+    return {
+        "name": repo.name,
+        "path": str(repo.path),
+        "status": "planned" if dry_run else "ok",
+        "message": message,
+        "git_command": git_command,
+    }
+
+
 def _read_repo(repo: Repo, command: str, timeout: float) -> dict[str, object]:
     result: dict[str, object] = {
         "name": repo.name,
@@ -253,6 +341,11 @@ def _report(command: str, results: list[dict[str, object]], json_output: bool) -
                 f"{result['name']} ({result['path']}): "
                 f"{result['status']} - {result['message']}"
             )
+        if command in ("pull", "fetch", "checkout"):
+            print(
+                f"Summary: {summary['total']} total, {summary['ok']} ok, "
+                f"{summary['failed']} failed, {summary['planned']} planned"
+            )
     return 1 if summary["failed"] else 0
 
 
@@ -265,6 +358,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout = options.before_timeout
     if timeout is None:
         timeout = 300.0
+    branch = options.branch if options.command == "checkout" else None
     try:
         if config is None:
             try:
@@ -274,6 +368,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"Cannot determine the home configuration: {exc}"
                 ) from exc
         repos = select_repos(load_config(config), names)
+        if branch is not None:
+            _validate_branch(branch, timeout)
     except ConfigError as exc:
         print(f"my-repos-ctl: {exc}", file=sys.stderr)
         return 2
@@ -281,7 +377,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     for repo in repos:
         result: dict[str, object]
         try:
-            result = _read_repo(repo, options.command, timeout)
+            if options.command in ("pull", "fetch", "checkout"):
+                result = _mutate_repo(
+                    repo, options.command, branch, options.dry_run, timeout
+                )
+            else:
+                result = _read_repo(repo, options.command, timeout)
         except RepoError as exc:
             result = {
                 "name": repo.name,
