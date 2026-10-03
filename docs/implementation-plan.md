@@ -151,9 +151,9 @@ executable.
   with regression tests. Re-run the narrow affected check and final gate.
 - [x] Inspect `git diff --check`, staged filenames and staged content for secrets,
   generated files and personal paths. Commit intentional project files only.
-- [ ] Reconfirm `gh api user` is bossjones; use `gh repo create` to publish public
+- [x] Reconfirm `gh api user` is bossjones; use `gh repo create` to publish public
   `bossjones/my-repos-ctl` from local `main`, then verify GitHub's default branch.
-- [ ] Install using `uv tool install` without overwriting unrelated executables;
+- [x] Install using `uv tool install` without overwriting unrelated executables;
   verify the installed command is responsive from outside the checkout.
   Do not silently overwrite an existing personal configuration.
 
@@ -176,5 +176,11 @@ and ty, and successful distributions build. Installed-wheel smoke tests exercise
 all six commands outside the checkout using temporary uv tool directories,
 configuration and local Git remotes. No personal config or managed repository
 was used. Final review findings were corrected with failing regression tests and
-received a clean scoped re-review. Publishing and normal tool installation remain
-open.
+received a clean scoped re-review.
+
+Published the public `bossjones/my-repos-ctl` repository with `main` as its first
+and default branch. Installed the normal non-editable package with uv; verified
+the managed launcher from outside the checkout. Personal configuration remains
+untouched. Git transport uses the already-authorized bossjones SSH identity via
+repository-local configuration, because the active gh OAuth token lacks workflow
+scope and the generic github.com SSH identity belongs to the other account.
