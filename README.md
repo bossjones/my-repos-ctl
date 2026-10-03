@@ -154,6 +154,13 @@ Checkout refuses dirty worktrees, including untracked files. It never forces a
 switch, discards changes, silently stashes, or automatically fetches. Commit or
 otherwise preserve changes yourself before retrying.
 
+Checkout takes a literal branch name, not a revision expression or previous-branch
+shorthand such as `@{-1}`. A local branch takes precedence; otherwise exactly one
+existing remote-tracking candidate must match. Ambiguous candidates fail even if
+Git has a preferred checkout remote. Custom fetch refspecs that rename branches
+or store tracking refs outside the conventional layout are not inferred; create
+an explicit local tracking branch with Git first.
+
 Pull deliberately allows dirty worktrees through `--rebase --autostash`. **Git
 can exit zero even when applying its autostash causes conflicts.** The CLI checks
 for unmerged entries after a successful pull and reports them as failure.
