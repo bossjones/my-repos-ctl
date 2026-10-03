@@ -1,0 +1,50 @@
+[project]
+name = "my-repos-ctl"
+version = "0.1.0"
+description = "Manage configured local Git repositories safely"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+my-repos-ctl = "my_repos_ctl.cli:main"
+
+[project.urls]
+Repository = "https://github.com/bossjones/my-repos-ctl"
+
+[build-system]
+requires = ["uv_build>=0.9.5,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.16.10",
+    "ty>=0.0.84",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=my_repos_ctl --cov-report=term-missing"
+markers = [
+    "mutation: tests that mutate isolated temporary Git repositories",
+]
+
+[tool.coverage.run]
+source = ["my_repos_ctl"]
+
+[tool.coverage.report]
+fail_under = 85
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ty.src]
+include = ["src"]
