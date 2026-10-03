@@ -61,6 +61,78 @@ def test_status_reports_branch_short_commit_and_dirty_state(
     assert result["dirty"] is (state in {"tracked", "untracked"})
 
 
+@pytest.mark.parametrize("detached", [False, True], ids=["attached", "detached"])
+def test_status_uses_actual_head_when_head_named_tag_points_elsewhere(
+    repo_factory, git, config_factory, snapshot, invoke_cli, assert_json, detached
+):
+    repo = repo_factory()
+    tag_commit = git(repo, "rev-parse", "HEAD").stdout.strip()
+    git(repo, "commit", "--allow-empty", "-m", "Actual HEAD")
+    actual_head = git(repo, "rev-parse", "HEAD").stdout.strip()
+    short_head = git(repo, "rev-parse", "--short", "HEAD").stdout.strip()
+    assert actual_head != tag_commit
+    if detached:
+        git(repo, "switch", "--detach", actual_head)
+    git(repo, "update-ref", "refs/tags/HEAD", tag_commit)
+    before = snapshot(repo)
+    config = config_factory({"one": repo})
+
+    code, captured = invoke_cli(["--config", str(config), "status", "--json"])
+
+    assert code == 0
+    result = assert_json(captured, "status", total=1, ok=1)[0]
+    assert result["branch"] == (None if detached else "main")
+    assert result["detached"] is detached
+    assert result["commit"] == short_head
+    assert result["dirty"] is False
+    assert snapshot(repo) == before
+
+
+def test_branches_decode_failure_is_reported_and_later_repo_succeeds(
+    repo_factory, git, config_factory, invoke_cli, assert_json
+):
+    bad = repo_factory("bad")
+    good = repo_factory("good")
+    commit = git(bad, "rev-parse", "HEAD").stdout.strip().encode("ascii")
+    (bad / ".git" / "packed-refs").write_bytes(
+        b"# pack-refs with: peeled fully-peeled sorted \n"
+        + commit
+        + b" refs/heads/raw-\xff\n"
+    )
+    raw_refs = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(bad),
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/heads/",
+        ],
+        capture_output=True,
+        stdin=subprocess.DEVNULL,
+        timeout=15,
+        check=True,
+    )
+    assert b"raw-\xff\n" in raw_refs.stdout
+    config = config_factory({"bad": bad, "good": good})
+
+    code, captured = invoke_cli(["--config", str(config), "branches", "--json"])
+
+    assert code == 1
+    results = assert_json(captured, "branches", total=2, ok=1, failed=1)
+    assert [(result["name"], result["status"]) for result in results] == [
+        ("bad", "failed"),
+        ("good", "ok"),
+    ]
+    assert set(results[0]) == {"name", "path", "status", "message"}
+    assert results[0]["path"] == str(bad)
+    diagnostic = results[0]["message"].lower()
+    assert "decode" in diagnostic and "git" in diagnostic
+    assert "rename" in diagnostic or "encoding" in diagnostic
+    assert results[1]["branches"] == ["main"]
+    assert not captured.err
+
+
 def test_branches_lists_local_and_tracking_refs_without_fetching(
     remote_pair, git, config_factory, snapshot, invoke_cli, assert_json
 ):

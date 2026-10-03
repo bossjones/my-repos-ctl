@@ -252,7 +252,7 @@ def test_unknown_selector_rejected_before_any_mutation(
     assert snapshot(repo) == before
 
 
-@pytest.mark.parametrize("failure", ["timeout", "missing-git"])
+@pytest.mark.parametrize("failure", ["timeout", "missing-git", "decode"])
 def test_subprocess_failures_have_specific_errors_and_json_results(
     repo_factory, config_factory, monkeypatch, invoke_cli, assert_json, failure
 ):
@@ -266,6 +266,8 @@ def test_subprocess_failures_have_specific_errors_and_json_results(
             raise subprocess.TimeoutExpired(
                 cmd=argv, timeout=kwargs["timeout"], stderr="timeout diagnostic"
             )
+        if failure == "decode":
+            raise UnicodeDecodeError("utf-8", b"raw-\xff", 4, 5, "invalid start byte")
         raise FileNotFoundError(2, "Git executable unavailable", "git")
 
     monkeypatch.setattr(subprocess, "run", fail_run)
@@ -274,11 +276,27 @@ def test_subprocess_failures_have_specific_errors_and_json_results(
     detail = str(exc.value).lower()
     if failure == "timeout":
         assert "timeout" in detail or "timed out" in detail
+    elif failure == "decode":
+        assert isinstance(exc.value.__cause__, UnicodeDecodeError)
+        assert "decode" in detail and "utf-8" in detail
+        assert "rename" in detail or "encoding" in detail
     else:
         assert "git" in detail
     code, captured = invoke_cli(["--config", str(config), "status", "--json"])
     assert code == 1
     assert_json(captured, "status", total=1, failed=1)
+
+
+def test_git_seam_does_not_convert_unexpected_errors(repo_factory, monkeypatch):
+    cli = cli_module()
+    repo = cli.Repo(name="one", path=repo_factory())
+
+    def fail_run(*args, **kwargs):
+        raise RuntimeError("unexpected subprocess failure")
+
+    monkeypatch.setattr(subprocess, "run", fail_run)
+    with pytest.raises(RuntimeError, match="unexpected subprocess failure"):
+        cli._git(repo, ["status", "--porcelain"], 2)
 
 
 def test_git_seam_preserves_diagnostics_and_successful_stdout(

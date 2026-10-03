@@ -20,3 +20,4 @@ dist/
 *.local.yaml
 .DS_Store
 .superpowers/
+.aif-skills/

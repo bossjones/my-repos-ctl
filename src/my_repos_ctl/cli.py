@@ -114,6 +114,12 @@ def _git(repo: Repo, args: list[str], timeout: float) -> str:
     except subprocess.TimeoutExpired as exc:
         detail = _diagnostics(exc.stdout, exc.stderr)
         raise RepoError(f"Git timed out after {timeout:g} seconds: {detail}") from exc
+    except UnicodeDecodeError as exc:
+        raise RepoError(
+            f"Cannot decode Git output as {exc.encoding}: "
+            f"{exc.reason} at byte {exc.start}. "
+            f"Rename affected Git refs or paths to names valid in {exc.encoding}."
+        ) from exc
     except OSError as exc:
         raise RepoError(f"Cannot run Git: {exc}") from exc
     if completed.returncode != 0:
@@ -214,11 +220,8 @@ def _read_repo(repo: Repo, command: str, timeout: float) -> dict[str, object]:
         ).splitlines()
         result.update(branches=branches, message=", ".join(branches) or "No branches")
     else:
-        ref = _git(repo, ["rev-parse", "--symbolic-full-name", "HEAD"], timeout).strip()
-        detached = ref == "HEAD"
-        if not detached and not ref.startswith("refs/heads/"):
-            raise RepoError(f"Unexpected HEAD reference: {ref!r}")
-        branch = None if detached else ref.removeprefix("refs/heads/")
+        branch = _git(repo, ["branch", "--show-current"], timeout).strip() or None
+        detached = branch is None
         commit = _git(repo, ["rev-parse", "--short", "HEAD"], timeout).strip()
         dirty = bool(
             _git(repo, ["status", "--porcelain=v1", "--untracked-files=all"], timeout)
