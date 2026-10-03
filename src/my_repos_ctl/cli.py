@@ -22,6 +22,10 @@ class ConfigError(Exception):
 class RepoError(Exception):
     """A repository operation could not be completed."""
 
+    def __init__(self, message: str, *, returncode: int | None = None) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+
 
 @dataclass(frozen=True)
 class Repo:
@@ -58,7 +62,7 @@ def load_config(path: Path) -> list[Repo]:
         raise ConfigError(f"Cannot load configuration {path}: {exc}") from exc
     try:
         document = yaml.load(text, Loader=_UniqueKeyLoader)
-    except yaml.YAMLError as exc:
+    except (yaml.YAMLError, ValueError, OverflowError) as exc:
         raise ConfigError(f"Invalid YAML in configuration {path}: {exc}") from exc
     if not isinstance(document, dict) or set(document) != {"repos"}:
         raise ConfigError("Configuration must contain only the 'repos' field")
@@ -133,7 +137,8 @@ def _git(repo: Repo | None, args: list[str], timeout: float) -> str:
     if completed.returncode != 0:
         detail = _diagnostics(completed.stdout, completed.stderr)
         raise RepoError(
-            f"Git exited {completed.returncode}: {detail or 'no diagnostics'}"
+            f"Git exited {completed.returncode}: {detail or 'no diagnostics'}",
+            returncode=completed.returncode,
         )
     return completed.stdout
 
@@ -212,6 +217,8 @@ def _validate_branch(branch: str, timeout: float) -> None:
     try:
         _git(None, ["check-ref-format", "--branch", branch], timeout)
     except RepoError as exc:
+        if exc.returncode is None or exc.returncode < 0:
+            raise
         raise ConfigError(f"Cannot validate branch name {branch!r}: {exc}") from exc
 
 
@@ -359,6 +366,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if timeout is None:
         timeout = 300.0
     branch = options.branch if options.command == "checkout" else None
+    validation_error: RepoError | None = None
     try:
         if config is None:
             try:
@@ -369,7 +377,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ) from exc
         repos = select_repos(load_config(config), names)
         if branch is not None:
-            _validate_branch(branch, timeout)
+            try:
+                _validate_branch(branch, timeout)
+            except RepoError as exc:
+                validation_error = exc
     except ConfigError as exc:
         print(f"my-repos-ctl: {exc}", file=sys.stderr)
         return 2
@@ -377,6 +388,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     for repo in repos:
         result: dict[str, object]
         try:
+            if validation_error is not None:
+                raise validation_error
             if options.command in ("pull", "fetch", "checkout"):
                 result = _mutate_repo(
                     repo, options.command, branch, options.dry_run, timeout

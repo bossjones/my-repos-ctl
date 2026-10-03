@@ -385,6 +385,145 @@ def test_invalid_branch_is_cli_error_before_processing_repos(
 
 
 @pytest.mark.mutation
+@pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+@pytest.mark.parametrize("selected", [False, True], ids=["all-repos", "selected-repo"])
+def test_checkout_missing_git_reports_every_selected_repo_without_mutations(
+    tmp_path,
+    repo_factory,
+    git,
+    config_factory,
+    snapshot,
+    monkeypatch,
+    invoke_cli,
+    assert_json,
+    dry_run,
+    selected,
+):
+    one = repo_factory("one")
+    two = repo_factory("two")
+    for repo in (one, two):
+        git(repo, "branch", "feature")
+    before = [snapshot(one), snapshot(two)]
+    config = config_factory({"one": one, "two": two})
+    empty_path = tmp_path / "empty-path"
+    empty_path.mkdir()
+    original_run = subprocess.run
+    operations = []
+
+    def validator_only(argv, **kwargs):
+        assert argv == ["git", "--no-pager", "check-ref-format", "--branch", "feature"]
+        operations.append(argv)
+        return original_run(argv, **kwargs)
+
+    args = ["--config", str(config), "--json", "checkout", "feature"]
+    if dry_run:
+        args.append("--dry-run")
+    if selected:
+        args.extend(["--repo", "two"])
+    with monkeypatch.context() as isolated:
+        isolated.setenv("PATH", str(empty_path))
+        isolated.setattr(subprocess, "run", validator_only)
+        code, captured = invoke_cli(args)
+
+    assert code == 1
+    total = 1 if selected else 2
+    results = assert_json(captured, "checkout", total=total, failed=total)
+    expected = (
+        [("two", str(two))] if selected else [("one", str(one)), ("two", str(two))]
+    )
+    assert [(result["name"], result["path"]) for result in results] == expected
+    assert all(
+        set(result) == {"name", "path", "status", "message"} for result in results
+    )
+    assert all("Cannot run Git" in result["message"] for result in results)
+    assert not captured.err
+    assert len(operations) == 1
+    assert [snapshot(one), snapshot(two)] == before
+
+
+@pytest.mark.mutation
+@pytest.mark.parametrize("dry_run", [False, True], ids=["execute", "dry-run"])
+@pytest.mark.parametrize("failure", ["timeout", "decode", "oserror", "signal"])
+def test_checkout_validator_execution_failure_reports_all_repos_without_mutations(
+    repo_factory,
+    git,
+    config_factory,
+    snapshot,
+    monkeypatch,
+    invoke_cli,
+    assert_json,
+    dry_run,
+    failure,
+):
+    one = repo_factory("one")
+    two = repo_factory("two")
+    for repo in (one, two):
+        git(repo, "branch", "feature")
+    before = [snapshot(one), snapshot(two)]
+    config = config_factory({"one": one, "two": two})
+    operations = []
+
+    def fail_validator(argv, **kwargs):
+        assert argv == ["git", "--no-pager", "check-ref-format", "--branch", "feature"]
+        operations.append(argv)
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(
+                cmd=argv,
+                timeout=kwargs["timeout"],
+                output=b"partial validator output",
+                stderr=b"validator timeout diagnostic",
+            )
+        if failure == "decode":
+            raise UnicodeDecodeError("utf-8", b"raw-\xff", 4, 5, "invalid start byte")
+        if failure == "oserror":
+            raise PermissionError(13, "Git executable is not executable", "git")
+        return subprocess.CompletedProcess(
+            argv, -15, stdout="", stderr="validator terminated"
+        )
+
+    args = [
+        "--config",
+        str(config),
+        "--json",
+        "--timeout",
+        "0.25",
+        "checkout",
+        "feature",
+    ]
+    if dry_run:
+        args.append("--dry-run")
+    with monkeypatch.context() as isolated:
+        isolated.setattr(subprocess, "run", fail_validator)
+        code, captured = invoke_cli(args)
+
+    assert code == 1
+    results = assert_json(captured, "checkout", total=2, failed=2)
+    assert [(result["name"], result["path"]) for result in results] == [
+        ("one", str(one)),
+        ("two", str(two)),
+    ]
+    assert all(
+        set(result) == {"name", "path", "status", "message"} for result in results
+    )
+    for result in results:
+        message = result["message"]
+        if failure == "timeout":
+            assert "timed out after 0.25 seconds" in message
+            assert "validator timeout diagnostic" in message
+            assert "partial validator output" in message
+        elif failure == "decode":
+            assert "decode" in message and "utf-8" in message
+            assert "Rename" in message
+        elif failure == "oserror":
+            assert "Cannot run Git" in message and "not executable" in message
+        else:
+            assert "Git exited -15" in message and "validator terminated" in message
+    assert not captured.err
+    assert len(operations) == 1
+    assert [snapshot(one), snapshot(two)] == before
+
+
+@pytest.mark.mutation
 @pytest.mark.parametrize("bad", ["missing", "nonrepo", "conflict"])
 def test_pull_continues_after_repo_failure(
     tmp_path,

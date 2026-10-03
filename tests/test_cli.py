@@ -225,6 +225,81 @@ def test_config_errors_return_two_not_system_exit(tmp_path, invoke_cli, missing)
     assert captured.err.strip()
 
 
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param("repos: {one: 2026-10-32}", id="invalid-timestamp"),
+        pytest.param("repos: {one: !!int not-an-integer}", id="invalid-tagged-integer"),
+    ],
+)
+def test_malformed_yaml_scalars_are_cli_errors_before_any_git_call(
+    tmp_path, monkeypatch, invoke_cli, document
+):
+    path = tmp_path / "bad-scalars.yml"
+    path.write_text(document, encoding="utf-8")
+
+    def forbid_run(*args, **kwargs):
+        pytest.fail("malformed YAML scalars must prevent every Git call")
+
+    monkeypatch.setattr(subprocess, "run", forbid_run)
+    code, captured = invoke_cli(
+        ["--config", str(path), "--json", "checkout", "feature"]
+    )
+
+    assert code == 2
+    assert not captured.out
+    assert "Invalid YAML" in captured.err
+    assert str(path) in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_yaml_scalar_constructor_overflow_is_cli_error(
+    tmp_path, config_factory, monkeypatch, invoke_cli
+):
+    cli = cli_module()
+    config = config_factory({"one": tmp_path / "one"})
+
+    def overflow_scalar(*args, **kwargs):
+        raise OverflowError("scalar value is out of range")
+
+    def forbid_run(*args, **kwargs):
+        pytest.fail("YAML constructor failures must prevent every Git call")
+
+    monkeypatch.setattr(cli.yaml, "load", overflow_scalar)
+    monkeypatch.setattr(subprocess, "run", forbid_run)
+    code, captured = invoke_cli(
+        ["--config", str(config), "--json", "checkout", "feature"]
+    )
+
+    assert code == 2
+    assert not captured.out
+    assert "Invalid YAML" in captured.err
+    assert "scalar value is out of range" in captured.err
+    assert "Traceback" not in captured.err
+
+
+@pytest.mark.parametrize("error_type", [RuntimeError, TypeError])
+def test_yaml_loader_does_not_hide_unexpected_constructor_errors(
+    tmp_path, config_factory, monkeypatch, capsys, error_type
+):
+    cli = cli_module()
+    config = config_factory({"one": tmp_path / "one"})
+
+    def unexpected_failure(*args, **kwargs):
+        raise error_type("unexpected YAML constructor failure")
+
+    def forbid_run(*args, **kwargs):
+        pytest.fail("a failed YAML load must prevent every Git call")
+
+    monkeypatch.setattr(cli.yaml, "load", unexpected_failure)
+    monkeypatch.setattr(subprocess, "run", forbid_run)
+    with pytest.raises(error_type, match="unexpected YAML constructor failure"):
+        cli.main(["--config", str(config), "--json", "checkout", "feature"])
+    captured = capsys.readouterr()
+    assert not captured.out
+    assert not captured.err
+
+
 @pytest.mark.mutation
 def test_unknown_selector_rejected_before_any_mutation(
     repo_factory, git, config_factory, snapshot, invoke_cli
