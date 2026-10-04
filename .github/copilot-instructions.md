@@ -39,6 +39,10 @@ This is a Python 3.12+ `uv_build` package with the console entry point
 `src/my_repos_ctl/cli.py`: argparse setup, safe PyYAML config loading,
 repository selection, Git subprocess execution, result reporting and exit-code
 mapping are all kept together. `src/my_repos_ctl/__init__.py` is docstring-only.
+Rich handles only human pull presentation: immediate completed-repo results and
+a failure-first summary table, with pull-only `--quiet`/`-q`. Use literal `Text`
+for names/paths/diagnostics and fold cells without clipping. JSON creates no
+console and preserves selection order; other commands keep their plain output.
 
 The CLI contract is the README plus `docs/design.md`: six commands (`list`,
 `status`, `branches`, `pull`, `fetch`, `checkout`), common options accepted
@@ -66,6 +70,8 @@ provides temporary repo, local bare remote, config, snapshot and CLI invocation
 fixtures. `tests/test_cli.py` covers config, parser, selection, JSON and
 subprocess-seam behavior; `tests/test_git.py` covers real temporary Git
 worktrees/remotes and mutation safety.
+`tests/test_pull_output.py` covers Rich rendering, quiet/JSON precedence, full
+diagnostics, per-repo progress timing and narrow-table path preservation.
 
 ## Key conventions
 

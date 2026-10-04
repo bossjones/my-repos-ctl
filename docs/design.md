@@ -10,7 +10,8 @@ public `bossjones/my-repos-ctl` GitHub repository. Keep the existing
 dp-repo-verify implementation unchanged.
 
 Keep the initial implementation in one module. Use Python 3.12+, standard-library
-argparse/subprocess and PyYAML. No framework, plugins, arbitrary shell execution,
+argparse/subprocess, PyYAML and Rich for human pull reporting. No framework,
+plugins, arbitrary shell execution,
 automatic cloning, force checkout, reset or automatic conflict recovery.
 
 ## Package and installation
@@ -101,6 +102,17 @@ each result includes `name`, `path`, `status` and `message`, plus command-specif
 data. Status values are explicit, for example `ok`, `failed` or `planned`.
 Keep stdout parseable in JSON mode; diagnostics are either structured per-repo
 results or stderr errors for configuration/argument failures.
+
+Human pull prints each completed repository's full result immediately, then a
+Rich Status/Repo/Detail table and counts. Pull-only `--quiet`/`-q` suppresses live
+results, not the table. Failures appear first in the table; actual operations
+and JSON remain in selection order. Human `ok` is displayed as `pulled`;
+dry-run remains `planned`. Table cells wrap full paths, and details prefer the
+first `error:`/`fatal:` line or last nonempty line, capped at 160 characters.
+User text is literal, not Rich markup; redirected output has no forced colors.
+JSON wins over quiet and keeps its existing fields/counts/statuses, with
+successful pull messages improved to Git stdout when nonempty. Fetch/checkout
+and read-only output remain plain.
 
 Exit 0 only when the requested operation succeeds for every selected repo.
 Exit 1 for repo/Git failures, after processing the remaining repos. Exit 2 for

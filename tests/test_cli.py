@@ -565,7 +565,8 @@ def test_mutations_include_human_summary(
     assert "one" in captured.out and str(pair.local) in captured.out
     assert "summary" in captured.out.lower()
     assert "1 total" in captured.out
-    assert f"{0 if dry_run else 1} ok" in captured.out
+    label = "pulled" if command == "pull" else "ok"
+    assert f"{0 if dry_run else 1} {label}" in captured.out
     assert "0 failed" in captured.out
     assert f"{1 if dry_run else 0} planned" in captured.out
     assert not captured.err

@@ -6,7 +6,7 @@ without changing global Git settings. Requires Python 3.12+ and Git; installatio
 and development use [uv](https://docs.astral.sh/uv/).
 
 This is an installable `uv_build` package, intentionally not a PEP 723 script.
-The runtime uses Python's standard library and PyYAML. It has no dependency on
+The runtime uses Python's standard library, PyYAML and Rich. It has no dependency on
 Adobe tooling, Scout, or the source checkout after a normal installation.
 There are no plugins, cloning commands, shell-command hooks, force operations,
 resets, or automatic conflict recovery.
@@ -138,6 +138,11 @@ are shown, and nothing was uploaded to an external rendering service.
 
 ![Real fetch dry-run with one planned result, followed by a successful fetch with one ok result](docs/images/fetch.png)
 
+**Pull with a Rich summary**: an updated app, an up-to-date docs repo and a missing
+worktree. Failures appear first; successful repositories are still processed:
+
+![Real quiet pull table with a failed missing worktree first, two pulled repositories and a three-repository summary](docs/images/pull.png)
+
 See [screenshot provenance and reproduction](docs/images/README.md) for exact
 commands, fixture setup and the self-contained HTML/CSS renderer.
 
@@ -182,6 +187,44 @@ output is one object with `command`, `results` and `summary`. Each result includ
 `name`, `path`, `status` and `message`, plus command-specific data. Statuses
 distinguish success, failure and planned work. JSON stdout stays parseable;
 configuration/argument errors go to stderr.
+
+### Rich pull output
+
+The default pull prints each repository's full result as it finishes, before
+starting the next repository, then a Rich **Pull summary** table. For the
+table-and-counts-only experience:
+
+```bash
+my-repos-ctl pull --quiet
+# Equivalent short option:
+my-repos-ctl pull -q
+# From the development checkout:
+uv run --locked my-repos-ctl pull --quiet
+```
+
+Preview without mutating repositories, or retain machine-readable output:
+
+```bash
+my-repos-ctl pull --dry-run --quiet
+my-repos-ctl pull --repo demo/app --repo demo/docs
+my-repos-ctl pull --json --quiet
+```
+
+The table has **Status / Repo / Detail** columns, includes each configured name
+and full path, and puts failures first while preserving selection order within
+each status group. Actual operations still follow selection order. Cells wrap
+to the terminal width; redirected output does not force ANSI color. Human
+statuses are `pulled`, `failed` and `planned`, followed by a counts line:
+`Summary: N total, X pulled, Y failed, Z planned`.
+
+Details prefer the first `error:`/`fatal:` line, otherwise the last nonempty
+line, capped at 160 characters. Default live output and JSON retain the full
+diagnostic. Successful pull messages now contain Git stdout when available,
+or an explicit completed-command message when Git is silent.
+
+`--quiet`/`-q` is pull-only and goes after the subcommand. With `--json`, JSON
+wins: no progress or table, unchanged result order and summary keys
+(`total`, `ok`, `failed`, `planned`). Other commands keep their existing output.
 
 | Exit | Meaning |
 | --- | --- |

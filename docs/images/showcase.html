@@ -20,6 +20,10 @@
     #config { height: 504px; }
     #status { height: 606px; }
     #fetch { height: 636px; }
+    #pull { height: 716px; }
+    #pull pre { font-size: 15px; line-height: 1.65; white-space: pre; }
+    .pull-failed { color: #ff938f; }
+    .pull-ok { color: #9ce5bf; }
     .eyebrow {
       margin: 0 0 12px;
       color: #88d9db;
@@ -150,6 +154,37 @@ Summary: 1 total, 1 ok, 0 failed, 0 planned
       </div>
     </div>
     <div class="footer"><span class="brand">my-repos-ctl<span class="tag">Real CLI output</span></span><span>Isolated demo HOME shown as ~ / no network remote</span></div>
+  </section>
+  <section class="card" id="pull" aria-label="Real quiet pull summary table">
+    <p class="eyebrow">04 / Pull</p>
+    <h1>Pull updates. See what needs attention.</h1>
+    <p class="subtitle">An updated app, up-to-date docs and a missing worktree. Failures first.</p>
+    <div class="window">
+      <div class="bar">
+        <div class="lights" aria-hidden="true"><span class="light red"></span><span class="light yellow"></span><span class="light green"></span></div>
+        Terminal / Rich pull summary
+      </div>
+      <div class="content">
+        <div class="run">
+          <pre class="command"><span class="prompt">$ </span>uv run --locked my-repos-ctl pull --quiet</pre>
+          <pre class="stdout" data-command="pull-quiet">                                                Pull summary
+┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃ Status ┃ Repo                                          ┃ Detail                                          ┃
+┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
+│ <span class="pull-failed">failed</span> │ demo/missing                                  │ Git exited 128: fatal: cannot change to         │
+│        │ ~/dev/demo/missing                            │ '~/dev/demo/missing'                            │
+│        │                                               │ : No such file or directory                     │
+│ <span class="pull-ok">pulled</span> │ demo/app                                      │ 1 file changed, 2 insertions(+)                 │
+│        │ ~/dev/demo/app                                │                                                 │
+│ <span class="pull-ok">pulled</span> │ demo/docs                                     │ Already up to date.                             │
+│        │ ~/dev/demo/docs                               │                                                 │
+└────────┴───────────────────────────────────────────────┴─────────────────────────────────────────────────┘
+Summary: 3 total, 2 pulled, 1 failed, 0 planned
+</pre>
+        </div>
+      </div>
+    </div>
+    <div class="footer"><span class="brand">my-repos-ctl<span class="tag">Real CLI output / exit 1</span></span><span>Isolated HOME shown as ~ / local remotes only</span></div>
   </section>
 </body>
 </html>

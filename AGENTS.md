@@ -13,6 +13,10 @@ This file is the canonical contributor guidance; `CLAUDE.md` references it.
   Follow `docs/design.md` and README for options, JSON, exits and Git safety.
 - Runtime is portable; do not introduce Adobe, Scout or checkout dependencies.
   Default user config is `~/.my-repo-ctl.yml`; track fictional example paths only.
+- Rich is presentation-only for human `pull`: live results, failure-first table
+  and pull-only `--quiet`/`-q`. Use literal `Text` for user-controlled content,
+  fold cells without clipping paths and never construct a console for JSON.
+  Preserve operation/JSON order and all non-pull output.
 
 ## TDD and checks
 
