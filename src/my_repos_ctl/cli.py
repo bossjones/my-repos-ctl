@@ -12,7 +12,16 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from rich.console import Console
+from rich.table import Table
+from rich.text import Text
 from yaml.constructor import ConstructorError
+
+_PULL_LABELS = {
+    "ok": ("pulled", "green"),
+    "failed": ("failed", "red"),
+    "planned": ("planned", "yellow"),
+}
 
 
 class ConfigError(Exception):
@@ -188,6 +197,13 @@ def _parser() -> argparse.ArgumentParser:
         _add_options(subparser, "after")
         if command in ("pull", "fetch", "checkout"):
             subparser.add_argument("--dry-run", action="store_true")
+        if command == "pull":
+            subparser.add_argument(
+                "--quiet",
+                "-q",
+                action="store_true",
+                help="Suppress live per-repo output; show only the pull summary table.",
+            )
         if command == "checkout":
             subparser.add_argument("branch")
     return parser
@@ -273,14 +289,18 @@ def _mutate_repo(
             "predict remote availability or merge success."
         )
     else:
-        _git(repo, args, timeout)
+        output = _git(repo, args, timeout)
         if command == "pull" and _git(repo, ["ls-files", "--unmerged"], timeout):
             raise RepoError(
                 "Pull left unmerged index entries (possible autostash conflict). "
                 "Inspect 'git status' and 'git stash list', preserve your changes, "
                 "and resolve conflicts manually. No recovery was attempted."
             )
-        message = f"Completed {shlex.join(git_command)}"
+        message = (
+            output.strip()
+            if command == "pull" and output.strip()
+            else f"Completed {shlex.join(git_command)}"
+        )
     return {
         "name": repo.name,
         "path": str(repo.path),
@@ -333,7 +353,46 @@ def _read_repo(repo: Repo, command: str, timeout: float) -> dict[str, object]:
     return result
 
 
-def _report(command: str, results: list[dict[str, object]], json_output: bool) -> int:
+def _pull_excerpt(message: str, limit: int = 160) -> str:
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    detail = next(
+        (line for line in lines if line.lower().startswith(("error:", "fatal:"))),
+        lines[-1],
+    )
+    return detail if len(detail) <= limit else detail[: limit - 1] + "\u2026"
+
+
+def _build_pull_summary_table(results: list[dict[str, object]]) -> Table:
+    order = {"failed": 0, "ok": 1, "planned": 2}
+    table = Table(title="Pull summary")
+    table.add_column("Status", no_wrap=True)
+    table.add_column("Repo", overflow="fold")
+    table.add_column("Detail", overflow="fold")
+    for result in sorted(results, key=lambda item: order[str(item["status"])]):
+        label, style = _PULL_LABELS[str(result["status"])]
+        table.add_row(
+            Text(label, style=style),
+            Text(f"{result['name']}\n{result['path']}"),
+            Text(_pull_excerpt(str(result["message"]))),
+        )
+    return table
+
+
+def _print_pull_result(result: dict[str, object], console: Console) -> None:
+    label, style = _PULL_LABELS[str(result["status"])]
+    line = Text(f"{label} ", style=style)
+    line.append(f"{result['name']} ({result['path']}): {result['message']}", style="")
+    console.print(line, soft_wrap=True)
+
+
+def _report(
+    command: str,
+    results: list[dict[str, object]],
+    json_output: bool,
+    pull_console: Console | None = None,
+) -> int:
     summary = {
         "total": len(results),
         "ok": sum(result["status"] == "ok" for result in results),
@@ -342,6 +401,15 @@ def _report(command: str, results: list[dict[str, object]], json_output: bool) -
     }
     if json_output:
         print(json.dumps({"command": command, "results": results, "summary": summary}))
+    elif command == "pull":
+        console = pull_console if pull_console is not None else Console(highlight=False)
+        console.print(_build_pull_summary_table(results))
+        console.print(
+            Text(
+                f"Summary: {summary['total']} total, {summary['ok']} pulled, "
+                f"{summary['failed']} failed, {summary['planned']} planned"
+            )
+        )
     else:
         for result in results:
             print(
@@ -384,6 +452,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"my-repos-ctl: {exc}", file=sys.stderr)
         return 2
+    json_output = options.before_json or options.after_json
+    pull_console = (
+        Console(highlight=False)
+        if options.command == "pull" and not json_output
+        else None
+    )
     results: list[dict[str, object]] = []
     for repo in repos:
         result: dict[str, object]
@@ -404,4 +478,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "message": str(exc),
             }
         results.append(result)
-    return _report(options.command, results, options.before_json or options.after_json)
+        if pull_console is not None and not options.quiet:
+            _print_pull_result(result, pull_console)
+    return _report(options.command, results, json_output, pull_console)

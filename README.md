@@ -6,7 +6,7 @@ without changing global Git settings. Requires Python 3.12+ and Git; installatio
 and development use [uv](https://docs.astral.sh/uv/).
 
 This is an installable `uv_build` package, intentionally not a PEP 723 script.
-The runtime uses Python's standard library and PyYAML. It has no dependency on
+The runtime uses Python's standard library, PyYAML and Rich. It has no dependency on
 Adobe tooling, Scout, or the source checkout after a normal installation.
 There are no plugins, cloning commands, shell-command hooks, force operations,
 resets, or automatic conflict recovery.
@@ -84,9 +84,28 @@ installation never creates or overwrites personal configuration. Use
 
 ```yaml
 repos:
-  project-one: ~/dev/project-one
-  project-two: ~/dev/project-two
+  demo/app: ~/dev/demo/app
+  demo/docs: ~/dev/demo/docs
 ```
+
+For a new personal config, copy the example, then edit the names and paths to
+match your own worktrees. `cp -n` leaves an existing destination untouched:
+
+```bash
+cp -n config.example.yml ~/.my-repo-ctl.yml
+chmod 600 ~/.my-repo-ctl.yml
+```
+
+If you already maintain an ignored `config.local.yml` in this checkout, use
+`cp -n config.local.yml ~/.my-repo-ctl.yml` instead, or select it directly with
+`my-repos-ctl --config ./config.local.yml list`. Keep checkout-local inventories
+in ignored files such as `config.local.yml`; never put them in the public example
+or commit them. Restrict private config files to mode `600`.
+
+Organization-qualified names such as `demo/app` are literal configuration keys,
+not a discovery mechanism. They prevent basename collisions when different
+organizations have repositories with the same short name. Select the exact key
+with `--repo demo/app`.
 
 `repos` must be a nonempty mapping of nonempty names to nonempty string paths.
 Duplicate YAML keys, duplicate resolved paths, invalid types and unknown
@@ -94,8 +113,38 @@ top-level fields are errors. `~` expands to your home directory. Relative
 repository paths resolve relative to the config file, not your working directory.
 Paths must identify actual non-bare Git worktree roots; linked worktrees are
 supported, but nested directories inside another repository are not roots.
+For a service nested inside a larger repository, configure the parent worktree
+root rather than the service subdirectory.
 
 Keep your personal configuration and credentials out of version control.
+
+## A local demo
+
+These locally rendered cards use fictional `demo/app` and `demo/docs` repositories.
+Terminal output comes from real CLI runs against temporary Git worktrees and
+local bare remotes, with isolated HOME, XDG and Git configuration. Only the exact
+temporary HOME prefix is shortened to `~`; no real inventory or private paths
+are shown, and nothing was uploaded to an external rendering service.
+
+**Configure** the repositories you want to manage:
+
+![Fictional YAML configuration mapping demo/app to ~/dev/demo/app and demo/docs to ~/dev/demo/docs](docs/images/config.png)
+
+**Inspect** both worktrees: demo/app is on main with a local edit; demo/docs is clean:
+
+![Real list and status output for fictional demo/app and demo/docs repositories, showing main dirty and main clean](docs/images/list-status.png)
+
+**Preview, then fetch** just demo/docs from its local bare remote:
+
+![Real fetch dry-run with one planned result, followed by a successful fetch with one ok result](docs/images/fetch.png)
+
+**Pull with a Rich summary**: an updated app, an up-to-date docs repo and a missing
+worktree. Failures appear first; successful repositories are still processed:
+
+![Real quiet pull table with a failed missing worktree first, two pulled repositories and a three-repository summary](docs/images/pull.png)
+
+See [screenshot provenance and reproduction](docs/images/README.md) for exact
+commands, fixture setup and the self-contained HTML/CSS renderer.
 
 ## Commands and options
 
@@ -122,10 +171,10 @@ names fail before any operation; duplicate selectors do not process a repo twice
 
 ```bash
 my-repos-ctl list
-my-repos-ctl --repo project-one --repo project-two status
+my-repos-ctl --repo demo/app --repo demo/docs status
 my-repos-ctl branches --config ./config.example.yml --json
-my-repos-ctl --timeout 300 fetch --repo project-one --dry-run
-my-repos-ctl checkout feature/example --repo project-one --dry-run
+my-repos-ctl --timeout 300 fetch --repo demo/app --dry-run
+my-repos-ctl checkout feature/example --repo demo/app --dry-run
 ```
 
 `pull`, `fetch` and `checkout` accept `--dry-run`. They perform read-only
@@ -138,6 +187,44 @@ output is one object with `command`, `results` and `summary`. Each result includ
 `name`, `path`, `status` and `message`, plus command-specific data. Statuses
 distinguish success, failure and planned work. JSON stdout stays parseable;
 configuration/argument errors go to stderr.
+
+### Rich pull output
+
+The default pull prints each repository's full result as it finishes, before
+starting the next repository, then a Rich **Pull summary** table. For the
+table-and-counts-only experience:
+
+```bash
+my-repos-ctl pull --quiet
+# Equivalent short option:
+my-repos-ctl pull -q
+# From the development checkout:
+uv run --locked my-repos-ctl pull --quiet
+```
+
+Preview without mutating repositories, or retain machine-readable output:
+
+```bash
+my-repos-ctl pull --dry-run --quiet
+my-repos-ctl pull --repo demo/app --repo demo/docs
+my-repos-ctl pull --json --quiet
+```
+
+The table has **Status / Repo / Detail** columns, includes each configured name
+and full path, and puts failures first while preserving selection order within
+each status group. Actual operations still follow selection order. Cells wrap
+to the terminal width; redirected output does not force ANSI color. Human
+statuses are `pulled`, `failed` and `planned`, followed by a counts line:
+`Summary: N total, X pulled, Y failed, Z planned`.
+
+Details prefer the first `error:`/`fatal:` line, otherwise the last nonempty
+line, capped at 160 characters. Default live output and JSON retain the full
+diagnostic. Successful pull messages now contain Git stdout when available,
+or an explicit completed-command message when Git is silent.
+
+`--quiet`/`-q` is pull-only and goes after the subcommand. With `--json`, JSON
+wins: no progress or table, unchanged result order and summary keys
+(`total`, `ok`, `failed`, `planned`). Other commands keep their existing output.
 
 | Exit | Meaning |
 | --- | --- |

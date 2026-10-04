@@ -1,3 +1,3 @@
 repos:
-  project-one: ~/dev/project-one
-  project-two: ~/dev/project-two
+  demo/app: ~/dev/demo/app
+  demo/docs: ~/dev/demo/docs
