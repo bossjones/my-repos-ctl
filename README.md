@@ -84,9 +84,28 @@ installation never creates or overwrites personal configuration. Use
 
 ```yaml
 repos:
-  project-one: ~/dev/project-one
-  project-two: ~/dev/project-two
+  demo/app: ~/dev/demo/app
+  demo/docs: ~/dev/demo/docs
 ```
+
+For a new personal config, copy the example, then edit the names and paths to
+match your own worktrees. `cp -n` leaves an existing destination untouched:
+
+```bash
+cp -n config.example.yml ~/.my-repo-ctl.yml
+chmod 600 ~/.my-repo-ctl.yml
+```
+
+If you already maintain an ignored `config.local.yml` in this checkout, use
+`cp -n config.local.yml ~/.my-repo-ctl.yml` instead, or select it directly with
+`my-repos-ctl --config ./config.local.yml list`. Keep checkout-local inventories
+in ignored files such as `config.local.yml`; never put them in the public example
+or commit them. Restrict private config files to mode `600`.
+
+Organization-qualified names such as `demo/app` are literal configuration keys,
+not a discovery mechanism. They prevent basename collisions when different
+organizations have repositories with the same short name. Select the exact key
+with `--repo demo/app`.
 
 `repos` must be a nonempty mapping of nonempty names to nonempty string paths.
 Duplicate YAML keys, duplicate resolved paths, invalid types and unknown
@@ -94,8 +113,33 @@ top-level fields are errors. `~` expands to your home directory. Relative
 repository paths resolve relative to the config file, not your working directory.
 Paths must identify actual non-bare Git worktree roots; linked worktrees are
 supported, but nested directories inside another repository are not roots.
+For a service nested inside a larger repository, configure the parent worktree
+root rather than the service subdirectory.
 
 Keep your personal configuration and credentials out of version control.
+
+## A local demo
+
+These locally rendered cards use fictional `demo/app` and `demo/docs` repositories.
+Terminal output comes from real CLI runs against temporary Git worktrees and
+local bare remotes, with isolated HOME, XDG and Git configuration. Only the exact
+temporary HOME prefix is shortened to `~`; no real inventory or private paths
+are shown, and nothing was uploaded to an external rendering service.
+
+**Configure** the repositories you want to manage:
+
+![Fictional YAML configuration mapping demo/app to ~/dev/demo/app and demo/docs to ~/dev/demo/docs](docs/images/config.png)
+
+**Inspect** both worktrees: demo/app is on main with a local edit; demo/docs is clean:
+
+![Real list and status output for fictional demo/app and demo/docs repositories, showing main dirty and main clean](docs/images/list-status.png)
+
+**Preview, then fetch** just demo/docs from its local bare remote:
+
+![Real fetch dry-run with one planned result, followed by a successful fetch with one ok result](docs/images/fetch.png)
+
+See [screenshot provenance and reproduction](docs/images/README.md) for exact
+commands, fixture setup and the self-contained HTML/CSS renderer.
 
 ## Commands and options
 
@@ -122,10 +166,10 @@ names fail before any operation; duplicate selectors do not process a repo twice
 
 ```bash
 my-repos-ctl list
-my-repos-ctl --repo project-one --repo project-two status
+my-repos-ctl --repo demo/app --repo demo/docs status
 my-repos-ctl branches --config ./config.example.yml --json
-my-repos-ctl --timeout 300 fetch --repo project-one --dry-run
-my-repos-ctl checkout feature/example --repo project-one --dry-run
+my-repos-ctl --timeout 300 fetch --repo demo/app --dry-run
+my-repos-ctl checkout feature/example --repo demo/app --dry-run
 ```
 
 `pull`, `fetch` and `checkout` accept `--dry-run`. They perform read-only
