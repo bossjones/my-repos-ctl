@@ -11,6 +11,48 @@ Adobe tooling, Scout, or the source checkout after a normal installation.
 There are no plugins, cloning commands, shell-command hooks, force operations,
 resets, or automatic conflict recovery.
 
+## Table of contents
+
+- [Cheatsheet](#cheatsheet)
+- [Install, update and uninstall](#install-update-and-uninstall)
+- [Configuration](#configuration)
+- [A local demo](#a-local-demo)
+- [Commands and options](#commands-and-options)
+  - [Rich pull output](#rich-pull-output)
+- [Safety and conflict recovery](#safety-and-conflict-recovery)
+- [Development](#development)
+
+## Cheatsheet
+
+Replace `demo/app` and `demo/docs` with names from your configuration. These
+commands use the installed `my-repos-ctl` executable:
+
+```bash
+# List configured repositories
+my-repos-ctl list
+
+# Inspect repository status and branches
+my-repos-ctl --repo demo/app --repo demo/docs status
+my-repos-ctl branches --repo demo/app
+
+# Update repositories
+my-repos-ctl pull --repo demo/app
+my-repos-ctl pull --repo demo/app --quiet
+my-repos-ctl fetch --repo demo/app
+
+# Preview mutating operations without changing repositories
+my-repos-ctl pull --repo demo/app --dry-run
+my-repos-ctl fetch --repo demo/app --dry-run
+my-repos-ctl checkout feature/example --repo demo/app --dry-run
+
+# Switch branches or emit machine-readable output
+my-repos-ctl checkout feature/example --repo demo/app
+my-repos-ctl list --json
+
+# Use a non-default configuration file
+my-repos-ctl --config ./config.local.yml list
+```
+
 ## Install, update and uninstall
 
 Install from your local checkout:
