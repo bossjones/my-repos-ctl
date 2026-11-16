@@ -7,7 +7,9 @@ import os
 import shlex
 import subprocess
 import sys
+from collections import deque
 from collections.abc import Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +24,7 @@ _PULL_LABELS = {
     "failed": ("failed", "red"),
     "planned": ("planned", "yellow"),
 }
+_MAX_PULL_JOBS = 8
 
 
 class ConfigError(Exception):
@@ -174,6 +177,28 @@ def _timeout(value: str) -> float:
     return seconds
 
 
+def _jobs(value: str) -> int:
+    try:
+        jobs = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"Jobs must be an integer between 1 and {_MAX_PULL_JOBS}"
+        ) from exc
+    if not 1 <= jobs <= _MAX_PULL_JOBS:
+        raise argparse.ArgumentTypeError(
+            f"Jobs must be an integer between 1 and {_MAX_PULL_JOBS}"
+        )
+    return jobs
+
+
+def _auto_jobs() -> int:
+    cpu_count = os.cpu_count()
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    if callable(process_cpu_count):
+        cpu_count = process_cpu_count() or cpu_count
+    return min(_MAX_PULL_JOBS, max(2, cpu_count or 1))
+
+
 def _add_options(parser: argparse.ArgumentParser, prefix: str) -> None:
     parser.add_argument("--config", type=Path, dest=f"{prefix}_config")
     parser.add_argument(
@@ -203,6 +228,16 @@ def _parser() -> argparse.ArgumentParser:
                 "-q",
                 action="store_true",
                 help="Suppress live per-repo output; show only the pull summary table.",
+            )
+            subparser.add_argument(
+                "--jobs",
+                "-j",
+                type=_jobs,
+                metavar="N",
+                help=(
+                    "Concurrent repository pulls (1-8; default: auto based "
+                    "on available CPUs)."
+                ),
             )
         if command == "checkout":
             subparser.add_argument("branch")
@@ -353,6 +388,100 @@ def _read_repo(repo: Repo, command: str, timeout: float) -> dict[str, object]:
     return result
 
 
+def _process_repo(
+    repo: Repo,
+    command: str,
+    branch: str | None,
+    dry_run: bool,
+    timeout: float,
+    validation_error: RepoError | None,
+) -> dict[str, object]:
+    try:
+        if validation_error is not None:
+            raise validation_error
+        if command in ("pull", "fetch", "checkout"):
+            return _mutate_repo(repo, command, branch, dry_run, timeout)
+        return _read_repo(repo, command, timeout)
+    except RepoError as exc:
+        return {
+            "name": repo.name,
+            "path": str(repo.path),
+            "status": "failed",
+            "message": str(exc),
+        }
+
+
+def _pull_group_key(repo: Repo, index: int, timeout: float) -> tuple[str, str]:
+    try:
+        common_dir = _git(repo, ["rev-parse", "--git-common-dir"], timeout).strip()
+        if not common_dir:
+            return ("repo", str(index))
+        path = Path(common_dir)
+        if not path.is_absolute():
+            path = repo.path / path
+        return ("git", str(path.resolve()))
+    except RepoError:
+        return ("repo", str(index))
+    except (OSError, ValueError, RuntimeError):
+        return ("repo", str(index))
+
+
+def _run_parallel_pulls(
+    repos: list[Repo],
+    jobs: int,
+    dry_run: bool,
+    timeout: float,
+    quiet: bool,
+    pull_console: Console | None,
+) -> list[dict[str, object]]:
+    groups: dict[tuple[str, str], deque[tuple[int, Repo]]] = {}
+    for index, repo in enumerate(repos):
+        key = _pull_group_key(repo, index, timeout)
+        groups.setdefault(key, deque()).append((index, repo))
+
+    max_workers = min(jobs, len(groups))
+    results: dict[int, dict[str, object]] = {}
+    active: dict[Future[dict[str, object]], tuple[int, tuple[str, str]]] = {}
+    active_groups: set[tuple[str, str]] = set()
+    executor = ThreadPoolExecutor(max_workers=max_workers)
+
+    def submit_ready() -> None:
+        while len(active) < max_workers:
+            ready = [
+                (pending[0][0], key)
+                for key, pending in groups.items()
+                if pending and key not in active_groups
+            ]
+            if not ready:
+                return
+            index, key = min(ready)
+            repo_index, repo = groups[key].popleft()
+            future = executor.submit(
+                _process_repo, repo, "pull", None, dry_run, timeout, None
+            )
+            active[future] = (repo_index, key)
+            active_groups.add(key)
+
+    try:
+        submit_ready()
+        while active:
+            done, _ = wait(active, return_when=FIRST_COMPLETED)
+            for future in sorted(done, key=lambda item: active[item][0]):
+                index, key = active.pop(future)
+                active_groups.remove(key)
+                result = future.result()
+                results[index] = result
+                if pull_console is not None and not quiet:
+                    _print_pull_result(result, pull_console)
+            submit_ready()
+    except BaseException:
+        executor.shutdown(wait=True, cancel_futures=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
+    return [results[index] for index in range(len(repos))]
+
+
 def _pull_excerpt(message: str, limit: int = 160) -> str:
     lines = [line.strip() for line in message.splitlines() if line.strip()]
     if not lines:
@@ -426,6 +555,11 @@ def _report(
 
 def main(argv: Sequence[str] | None = None) -> int:
     options = _parser().parse_args(argv)
+    jobs = (
+        (options.jobs if options.jobs is not None else _auto_jobs())
+        if options.command == "pull"
+        else None
+    )
     config = options.after_config or options.before_config
     names = (options.before_repos or []) + (options.after_repos or [])
     timeout = options.after_timeout
@@ -433,6 +567,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout = options.before_timeout
     if timeout is None:
         timeout = 300.0
+    dry_run = (
+        options.dry_run if options.command in ("pull", "fetch", "checkout") else False
+    )
     branch = options.branch if options.command == "checkout" else None
     validation_error: RepoError | None = None
     try:
@@ -458,26 +595,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         if options.command == "pull" and not json_output
         else None
     )
-    results: list[dict[str, object]] = []
-    for repo in repos:
-        result: dict[str, object]
-        try:
-            if validation_error is not None:
-                raise validation_error
-            if options.command in ("pull", "fetch", "checkout"):
-                result = _mutate_repo(
-                    repo, options.command, branch, options.dry_run, timeout
-                )
-            else:
-                result = _read_repo(repo, options.command, timeout)
-        except RepoError as exc:
-            result = {
-                "name": repo.name,
-                "path": str(repo.path),
-                "status": "failed",
-                "message": str(exc),
-            }
-        results.append(result)
-        if pull_console is not None and not options.quiet:
-            _print_pull_result(result, pull_console)
+    if options.command == "pull" and jobs is not None and jobs > 1 and len(repos) > 1:
+        results = _run_parallel_pulls(
+            repos, jobs, dry_run, timeout, options.quiet, pull_console
+        )
+    else:
+        results = []
+        for repo in repos:
+            result = _process_repo(
+                repo,
+                options.command,
+                branch,
+                dry_run,
+                timeout,
+                validation_error,
+            )
+            results.append(result)
+            if pull_console is not None and not options.quiet:
+                _print_pull_result(result, pull_console)
     return _report(options.command, results, json_output, pull_console)

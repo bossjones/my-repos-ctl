@@ -142,6 +142,8 @@ def test_live_result_is_printed_before_next_repo_pull(
     checkpoints = []
 
     def check_progress(argv, **kwargs):
+        if "--git-common-dir" in argv:
+            pytest.fail("--jobs 1 must not probe linked-worktree groups")
         if "pull" in argv and str(second) in argv:
             progress = capsys.readouterr().out
             assert "first-demo" in progress
@@ -151,7 +153,9 @@ def test_live_result_is_printed_before_next_repo_pull(
         return original_run(argv, **kwargs)
 
     monkeypatch.setattr(subprocess, "run", check_progress)
-    code, captured = invoke(invoke_cli, ["--config", str(config), "pull"])
+    code, captured = invoke(
+        invoke_cli, ["--config", str(config), "pull", "--jobs", "1"]
+    )
     assert code == 0 and len(checkpoints) == 1
     assert "Pull summary" in captured.out and "2 pulled" in captured.out
 
@@ -256,4 +260,24 @@ def test_quiet_is_rejected_by_other_commands(config_factory, tmp_path, invoke_cl
     config = config_factory({"demo/docs": tmp_path / "repo"})
     with pytest.raises(SystemExit) as exc:
         invoke_cli(["--config", str(config), "list", "--quiet"])
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("value", ["nope", "0", "9"])
+def test_pull_jobs_rejects_invalid_values_before_loading_config(
+    tmp_path, invoke_cli, capsys, value
+):
+    with pytest.raises(SystemExit) as exc:
+        invoke_cli(["pull", "--jobs", value, "--config", str(tmp_path / "missing.yml")])
+    captured = capsys.readouterr()
+    assert exc.value.code == 2
+    assert not captured.out
+    assert "jobs" in captured.err.lower()
+    assert "1 and 8" in captured.err
+
+
+def test_jobs_is_pull_only(config_factory, tmp_path, invoke_cli):
+    config = config_factory({"demo/docs": tmp_path / "repo"})
+    with pytest.raises(SystemExit) as exc:
+        invoke_cli(["--config", str(config), "list", "--jobs", "2"])
     assert exc.value.code == 2

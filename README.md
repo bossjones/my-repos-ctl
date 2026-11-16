@@ -166,6 +166,13 @@ Common options work **before or after the subcommand**:
 | `--json` | Emit one JSON object rather than human-readable output. |
 | `--timeout SECONDS` | Positive timeout per Git subprocess; default `300`. |
 
+`pull` also accepts `--jobs N`/`-j N` after the subcommand. `N` must be between
+1 and 8. If omitted, the CLI chooses between 2 and 8 workers based on available
+CPUs, then limits concurrency to the selected repositories and independent Git
+directories. Use `--jobs 1` to run pulls sequentially.
+Parallel pulls may trigger concurrent SSH or signing prompts; use agent-backed
+or non-interactive credentials, or select `--jobs 1` if prompts are expected.
+
 Without selectors, process every configured repository in YAML order. Unknown
 names fail before any operation; duplicate selectors do not process a repo twice.
 
@@ -173,6 +180,8 @@ names fail before any operation; duplicate selectors do not process a repo twice
 my-repos-ctl list
 my-repos-ctl --repo demo/app --repo demo/docs status
 my-repos-ctl branches --config ./config.example.yml --json
+my-repos-ctl pull --jobs 4
+my-repos-ctl pull --jobs 1 --quiet
 my-repos-ctl --timeout 300 fetch --repo demo/app --dry-run
 my-repos-ctl checkout feature/example --repo demo/app --dry-run
 ```
@@ -190,9 +199,11 @@ configuration/argument errors go to stderr.
 
 ### Rich pull output
 
-The default pull prints each repository's full result as it finishes, before
-starting the next repository, then a Rich **Pull summary** table. For the
-table-and-counts-only experience:
+The default pull uses bounded, resource-based concurrency and prints each
+repository's full result as it finishes, then a Rich **Pull summary** table.
+Set `--jobs 1` to print each result before starting the next repository and
+preserve the original sequential behavior. For the table-and-counts-only
+experience:
 
 ```bash
 my-repos-ctl pull --quiet
@@ -212,9 +223,11 @@ my-repos-ctl pull --json --quiet
 
 The table has **Status / Repo / Detail** columns, includes each configured name
 and full path, and puts failures first while preserving selection order within
-each status group. Actual operations still follow selection order. Cells wrap
-to the terminal width; redirected output does not force ANSI color. Human
-statuses are `pulled`, `failed` and `planned`, followed by a counts line:
+each status group. Cells wrap to the terminal width; redirected output does not
+force ANSI color. With more than one job, operations across repositories and
+live output may complete out of selection order; each repository's own steps
+remain ordered. JSON results always remain in selection order. Human statuses
+are `pulled`, `failed` and `planned`, followed by a counts line:
 `Summary: N total, X pulled, Y failed, Z planned`.
 
 Details prefer the first `error:`/`fatal:` line, otherwise the last nonempty

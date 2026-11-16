@@ -1,11 +1,13 @@
 # Research: speeding up `my-repos-ctl pull` with concurrency
 
-Date: 2026-11-16. Scope: analysis and proposal only. No code, test or runtime
-changes were made.
+Date: 2026-11-16. Scope: source-backed design analysis for concurrent pull
+behavior and its implementation rationale. Runtime code lives in
+`src/my_repos_ctl/cli.py`; this note records the research and chosen trade-offs.
 
 Convention used: **[S]** marks a sourced fact with a citation. **[R]** marks a
-recommendation or inference of this report, not a sourced fact. **[U]** marks
-something that could not be verified. Python docs were read at
+recommendation or inference of this report, not a sourced fact. **[M]** marks a
+measurement in this repo's isolated local benchmark. **[U]** marks something
+that could not be verified. Python docs were read at
 `https://docs.python.org/3/...`, which rendered as the "3.15.2 documentation"
 on the fetch date. Only behavior with an explicit "Changed in/Added in" note
 is attributed to a version. Git docs were read at `https://git-scm.com/docs/...`
@@ -13,14 +15,16 @@ is attributed to a version. Git docs were read at `https://git-scm.com/docs/...`
 
 ## 1. Bottom line
 
-- **[R]** Use a bounded `concurrent.futures.ThreadPoolExecutor` that runs the
+- **[R]** Use a bounded `concurrent.futures.ThreadPoolExecutor` around the
   existing synchronous per-repository function. Do not use asyncio or
   multiprocessing.
-- **[R]** Make concurrency opt-in with `--jobs N` (default 1 at first),
-  capped at a small number such as 4-8. Print completed repos as they finish,
-  but keep `results` and JSON order as the selection order. Parallel mode
-  necessarily relaxes the current contract that actual operations run in
-  selection order; document that each repo's own operations remain ordered.
+- **[R]** Default to resource-based auto concurrency: at least 2 workers, at
+  most 8, based on available CPUs and further bounded by selected independent
+  repositories. `--jobs N` accepts 1 through 8; `--jobs 1` retains the exact
+  sequential path.
+- **[R]** In parallel mode, print results as repos finish but preserve `results`
+  and JSON order as selection order. Cross-repo operation order necessarily
+  changes; each repo's own Git steps remain ordered.
 - **[R]** Serialize repos that share a Git common directory, such as linked
   worktrees. Do not retry automatically in the first version; add a retry only
   if a later design can identify a safe pre-mutation failure boundary.
@@ -384,14 +388,17 @@ Sources: https://docs.python.org/3/library/asyncio-subprocess.html, `asyncio-tas
 
 **[R]** Recommendation: ThreadPoolExecutor.
 
-## 9. Recommended design (for a future TDD task)
+## 9. Selected implementation design
 
 1. **Option**: `pull --jobs N`/`-j N`, as a pull-subparser-only option like
-   `--quiet`. **[R]** Default to 1 until measured, and keep that value on the
-   existing sequential path so it adds no common-directory probe or scheduling
-   changes. For an initial parallel mode, cap at 8 and reject values outside
-   `1..8` with an argparse error and exit 2 rather than silently clamping. The
-   cap is a conservative product choice, not a Python or Git limit.
+   `--quiet`. **[R]** When omitted, choose `min(8, max(2, available CPUs))`;
+   use `os.process_cpu_count()` when available and fall back to
+   `os.cpu_count()` for Python 3.12. The minimum of 2 allows overlap for
+   I/O-bound pulls even on a one-CPU process. Limit the effective workers to
+   selected repos and distinct Git common directories. Reject explicit values
+   outside `1..8` with an argparse error and exit 2 rather than silently
+   clamping. This cap is a conservative product choice, not a Python or Git
+   limit.
 2. **Scheduling**:
    - With `jobs == 1`, retain the current `for repo in repos` loop exactly.
    - For `jobs > 1`, determine a normalized common-Git-directory key for each
@@ -425,7 +432,7 @@ Sources: https://docs.python.org/3/library/asyncio-subprocess.html, `asyncio-tas
 6. **Interruption**: on `KeyboardInterrupt`, stop scheduling and cancel queued
    futures, then propagate the interruption as the current CLI does. Do not
    invent a `"not run"` status or emit partial JSON/summary output. Running
-   futures cannot be cancelled; a context-manager exit waits for them, and
+   futures cannot be cancelled; executor shutdown waits for them, and
    `shutdown(wait=False)` does not make the interpreter exit before them.
    Terminal Ctrl-C may also interrupt active Git children, while other forms of
    interruption may not. Do not promise prompt whole-process-tree termination;
@@ -455,18 +462,23 @@ Sources: https://docs.python.org/3/library/asyncio-subprocess.html, `asyncio-tas
    JSON and `--quiet`; interruption and unexpected worker exceptions. Use
    `threading.Event`/`Barrier` at the subprocess seam for deterministic
    scheduling, not sleeps.
-9. **Docs**: if implemented, update `README.md`, `docs/design.md`, and
-   `AGENTS.md` for `--jobs`, the `jobs == 1` compatibility behavior, parallel
-   operation ordering, and live output. The current contributor guidance says
-   to preserve operation order.
+9. **Docs**: document `--jobs`, the auto default, the `jobs == 1`
+   compatibility behavior, parallel operation ordering, and live output in
+   `README.md`, `docs/design.md`, and `AGENTS.md`.
 
-## 10. Open questions and gaps
+## 10. Local benchmark and open questions
+
+- **[M]** On macOS with Python 3.12.8, 12 temporary clones of one local bare
+  remote were pulled five times each, alternating `--jobs 1` with default auto
+  mode. Median wall time was 1.594 seconds sequential and 0.569 seconds auto,
+  a 2.80x speedup. Every pull succeeded. This measures local no-op fetches and
+  CLI/process overhead, not GitHub or SSH network latency, large transfers, or
+  nontrivial rebases. No managed repos or network remotes were used.
 
 - The cmux surface exposed the post and visible comments; hidden or collapsed
   comments were not evaluated.
-- No measurements were taken, because the task excluded running anything against
-  real repos and excluded runtime changes. The expected speedup is unmeasured.
-  Real Python's numbers are for HTTP downloads.
+- Speedup depends on remotes and local storage. Real Python's timings are for
+  HTTP downloads and do not predict Git subprocess performance.
 - Cleanup of descendant processes after timeout/interruption, precise shared
   ref-lock contention, and GitHub's SSH-server limits were not verified from
   primary sources.
