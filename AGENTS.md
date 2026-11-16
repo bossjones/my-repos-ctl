@@ -14,9 +14,12 @@ This file is the canonical contributor guidance; `CLAUDE.md` references it.
 - Runtime is portable; do not introduce Adobe, Scout or checkout dependencies.
   Default user config is `~/.my-repo-ctl.yml`; track fictional example paths only.
 - Rich is presentation-only for human `pull`: live results, failure-first table
-  and pull-only `--quiet`/`-q`. Use literal `Text` for user-controlled content,
-  fold cells without clipping paths and never construct a console for JSON.
-  Preserve operation/JSON order and all non-pull output.
+  and pull-only `--quiet`/`-q`. Pull uses bounded thread concurrency by default;
+  `--jobs 1` retains the exact sequential path, while parallel mode serializes
+  worktrees sharing a Git common directory. Keep JSON results in selection
+  order, each repo's Git steps ordered, and all non-pull output unchanged. Use
+  literal `Text` for user-controlled content, fold cells without clipping paths
+  and never construct a console for JSON.
 
 ## TDD and checks
 
@@ -44,6 +47,9 @@ Ruff uses Python 3.12, line length 88 and `E,F,I,UP,B`; ty alone checks runtime
   repositories and local bare remotes.
 - Run Git via argument arrays, never shell strings; retain diagnostics and
   bounded timeouts. Continue after per-repo errors, not configuration failures.
+- Keep pull concurrency bounded; stop scheduling and cancel queued futures on
+  interruption or unexpected worker errors. Do not retry failed pulls
+  automatically.
 - Preserve dry-run nonmutation, dirty-checkout refusal and post-pull unmerged
   checks. No force operations, resets or automatic conflict recovery.
 - Never overwrite user config or unrelated launchers, alter global Git settings,

@@ -74,16 +74,20 @@ credentials, environment files, virtual environments, caches or build output.
 
 ## CLI contract
 
-Global options: `--config PATH`, repeated `--repo NAME` selectors, `--json`, and
-a positive `--timeout SECONDS` (default 300, per Git subprocess). Accept common
-options before or after the subcommand for convenient everyday use.
+Common options: `--config PATH`, repeated `--repo NAME` selectors, `--json`, and
+a positive `--timeout SECONDS` (default 300, per Git subprocess). Accept these
+options before or after the subcommand for convenient everyday use. `pull`
+also accepts pull-only `--jobs N`/`-j N` after the subcommand; `N` is 1 through
+8. The default is resource-based auto concurrency, while `--jobs 1` is
+sequential. Parallel pulls assume agent-backed or otherwise non-interactive
+authentication; the tool does not alter SSH or Git prompt settings.
 
 | Command | Behavior |
 | --- | --- |
 | `list` | List configured names and resolved paths; no Git or network calls. |
 | `status` | Report branch or detached commit, dirty state and local path. |
 | `branches` | List local and remote-tracking branches; no automatic fetch. |
-| `pull` | Run `git pull --rebase --autostash`, preserving the useful existing behavior. |
+| `pull` | Run `git pull --rebase --autostash` with bounded concurrency across independent repositories. |
 | `fetch` | Run `git fetch --prune` using Git's configured default remote. |
 | `checkout BRANCH` | Switch to a local branch, or let Git track an unambiguous existing remote branch. |
 
@@ -103,10 +107,15 @@ data. Status values are explicit, for example `ok`, `failed` or `planned`.
 Keep stdout parseable in JSON mode; diagnostics are either structured per-repo
 results or stderr errors for configuration/argument failures.
 
+By default, pull chooses between 2 and 8 workers based on available CPUs,
+limited by selected repositories and distinct Git common directories.
+`--jobs 1` preserves the original sequential operation and progress order.
 Human pull prints each completed repository's full result immediately, then a
 Rich Status/Repo/Detail table and counts. Pull-only `--quiet`/`-q` suppresses live
-results, not the table. Failures appear first in the table; actual operations
-and JSON remain in selection order. Human `ok` is displayed as `pulled`;
+results, not the table. In parallel mode, cross-repository operations and live
+results may complete out of selection order; each repository's Git steps remain
+ordered. JSON results remain in selection order. Failures appear first in the
+table. Human `ok` is displayed as `pulled`;
 dry-run remains `planned`. Table cells wrap full paths, and details prefer the
 first `error:`/`fatal:` line or last nonempty line, capped at 160 characters.
 User text is literal, not Rich markup; redirected output has no forced colors.
@@ -116,7 +125,9 @@ and read-only output remain plain.
 
 Exit 0 only when the requested operation succeeds for every selected repo.
 Exit 1 for repo/Git failures, after processing the remaining repos. Exit 2 for
-invalid configuration, selection or arguments. Interruption stops further work.
+invalid configuration, selection or arguments. Interruption stops scheduling
+further work and cancels queued pulls; already-running operations cannot be
+cancelled as futures and are waited for during executor shutdown.
 
 ## Git safety and errors
 
